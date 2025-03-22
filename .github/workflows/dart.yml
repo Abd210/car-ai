@@ -3,6 +3,10 @@ name: iOS-ipa-build
 on:
   workflow_dispatch:
 
+# ADD THIS:
+permissions:
+  contents: write
+
 jobs:
   build-ios:
     name: 🎉 iOS Build
@@ -14,10 +18,10 @@ jobs:
         with:
           channel: 'stable'
           architecture: x64
+
       - run: cd car_ai
       - run: flutter pub get
       
-
       - run: pod repo update
         working-directory: ios
 
