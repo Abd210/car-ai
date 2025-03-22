@@ -12,7 +12,8 @@ import 'package:flutter_spinkit/flutter_spinkit.dart';
 // ---------------------------------------------------------------------------
 // Where we send the request
 // ---------------------------------------------------------------------------
-const String kBackendUrl = 'https://dash-gem-ef3cd0583e98.herokuapp.com/analyzeDashboardPic';
+const String kBackendUrl =
+    'https://dash-gem-ef3cd0583e98.herokuapp.com/analyzeDashboardPic';
 
 // Some colors for the wave background:
 const Color kColorPrimary = Color(0xFF3D8D7A);
@@ -87,8 +88,8 @@ class _DashGemChatPageState extends State<DashGemChatPage>
   List<ChatMessage> _messages = [];
 
   // UI states
-  bool _isSending = false;
-  bool _aiTyping = false;
+  bool _isSending = false;  
+  bool _aiTyping = false;  
   bool _showScrollDownBtn = false;
 
   // If user chooses an image but hasn't sent yet, store it here
@@ -167,6 +168,24 @@ class _DashGemChatPageState extends State<DashGemChatPage>
     }
   }
 
+  // Build the conversation memory to send to backend
+  String _buildConversationMemory() {
+    // Example format: "User: Hello\nAI: How can I help?\nUser: I need help!\n..."
+    final buffer = StringBuffer();
+    for (final msg in _messages) {
+      final speaker = (msg.sender == MessageSender.user) ? 'User' : 'AI';
+      // Combine both text & possible images info (basic). You can customize more if needed
+      if (msg.imageBytes != null) {
+        buffer.writeln('$speaker: [image attached]');
+      }
+      if (msg.text.isNotEmpty) {
+        buffer.writeln('$speaker: ${msg.text}');
+      }
+      buffer.writeln(); // blank line
+    }
+    return buffer.toString().trim();
+  }
+
   // Add user message
   void _addUserMessage({String text = '', Uint8List? imageBytes}) {
     setState(() {
@@ -201,8 +220,20 @@ class _DashGemChatPageState extends State<DashGemChatPage>
     // Locally add user's chat bubble (which might have text, image, or both)
     _addUserMessage(text: text, imageBytes: _selectedImageBytes);
 
-    // Then actually send to backend
-    _sendToBackend(text, _selectedImageBytes);
+    // Check how many words user typed (simple check by splitting on spaces)
+    final wordCount = text.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length;
+
+    // Send 1 request if < 20 words, or 2 requests if >= 20 words
+    _sendToBackend(text, _selectedImageBytes, isFollowUp: false).then((_) async {
+      // If user typed a big message, do a follow-up request
+      if (wordCount >= 20) {
+        await _sendToBackend(
+          "Follow-up: The user wrote a lengthy message. Please provide more details.",
+          null,
+          isFollowUp: true,
+        );
+      }
+    });
 
     // Clear local states
     setState(() {
@@ -247,7 +278,9 @@ class _DashGemChatPageState extends State<DashGemChatPage>
   }
 
   // *** The crucial method that does the "curl-like" request. ***
-  Future<void> _sendToBackend(String text, Uint8List? imageBytes) async {
+  // If `isFollowUp` is true, we label the text differently in the request.
+  Future<void> _sendToBackend(String text, Uint8List? imageBytes,
+      {required bool isFollowUp}) async {
     setState(() {
       _isSending = true;
       _aiTyping = true; // We'll show a typing bubble
@@ -266,21 +299,25 @@ class _DashGemChatPageState extends State<DashGemChatPage>
       // Create multipart request
       final request = http.MultipartRequest('POST', Uri.parse(kBackendUrl));
 
-      // 1) Add text field
-      //    If user typed anything, send it. If not, just put something trivial.
-      if (text.isNotEmpty) {
-        request.fields['text'] = text;
+      // Add the entire conversation so far
+      final conversationMemory = _buildConversationMemory();
+      request.fields['memory'] = conversationMemory;
+
+      // Add text field
+      // If this is a follow-up, we prefix it in some way to differentiate
+      if (isFollowUp) {
+        request.fields['text'] = "FOLLOW-UP >> $text";
       } else {
-        request.fields['text'] = 'User posted only an image.';
+        request.fields['text'] = text.isNotEmpty ? text : 'User posted only an image.';
       }
 
-      // 2) Add file under field name "image"
+      // Add file under field name "image"
       if (imageBytes != null) {
         request.files.add(
           http.MultipartFile.fromBytes(
             'image',
             imageBytes,
-            filename: 'check-engine.jpg',
+            filename: 'user-upload.jpg',
             contentType: MediaType('image', 'jpeg'), // or 'png' if needed
           ),
         );
@@ -366,18 +403,10 @@ class _DashGemChatPageState extends State<DashGemChatPage>
     return Scaffold(
       body: Stack(
         children: [
-          // Painted wave background (moving)
+          // Painted wave background (3 layers for bigger effect)
           CustomPaint(
             painter: WavePainter(animation: _waveController),
-            child: Container(
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [Colors.white, kColorCream],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-              ),
-            ),
+            child: Container(),
           ),
 
           Column(
@@ -791,7 +820,7 @@ class _TypingBubble extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// WavePainter for the background (made bigger amplitude + placed lower)
+// WavePainter for the background (3 waves, bigger amplitude)
 // ---------------------------------------------------------------------------
 class WavePainter extends CustomPainter {
   final Animation<double> animation;
@@ -802,37 +831,50 @@ class WavePainter extends CustomPainter {
     final w = size.width;
     final h = size.height;
 
-    // Wave #1 (Mint)
-    final wavePaint1 = Paint()..color = kColorMint.withOpacity(0.4);
+    // Wave #1 (lowest)
+    final wavePaint1 = Paint()..color = kColorMint.withOpacity(0.3);
     final wave1 = Path();
-    // Start from near bottom (70%)
-    wave1.moveTo(0, h * 0.7);
+    wave1.moveTo(0, h * 0.35);
     for (double x = 0; x <= w; x++) {
       wave1.lineTo(
         x,
-        h * 0.7 + math.sin((x + animation.value * 500) * 0.02) * 40,
+        h * 0.35 + math.sin((x + animation.value * 300) * 0.02) * 40,
       );
     }
-    wave1.lineTo(w, h);
-    wave1.lineTo(0, h);
+    wave1.lineTo(w, 0);
+    wave1.lineTo(0, 0);
     wave1.close();
     canvas.drawPath(wave1, wavePaint1);
 
-    // Wave #2 (LightGreen)
+    // Wave #2 (middle)
     final wavePaint2 = Paint()..color = kColorLightGreen.withOpacity(0.4);
     final wave2 = Path();
-    // Start a bit higher (60%)
-    wave2.moveTo(0, h * 0.6);
+    wave2.moveTo(0, h * 0.55);
     for (double x = 0; x <= w; x++) {
       wave2.lineTo(
         x,
-        h * 0.6 + math.sin((x + animation.value * 700) * 0.025) * 50,
+        h * 0.55 + math.sin((x + animation.value * 400) * 0.015) * 60,
       );
     }
-    wave2.lineTo(w, h);
-    wave2.lineTo(0, h);
+    wave2.lineTo(w, 0);
+    wave2.lineTo(0, 0);
     wave2.close();
     canvas.drawPath(wave2, wavePaint2);
+
+    // Wave #3 (highest)
+    final wavePaint3 = Paint()..color = kColorMint.withOpacity(0.4);
+    final wave3 = Path();
+    wave3.moveTo(0, h * 0.75);
+    for (double x = 0; x <= w; x++) {
+      wave3.lineTo(
+        x,
+        h * 0.75 + math.sin((x + animation.value * 600) * 0.025) * 80,
+      );
+    }
+    wave3.lineTo(w, h);
+    wave3.lineTo(0, h);
+    wave3.close();
+    canvas.drawPath(wave3, wavePaint3);
   }
 
   @override
