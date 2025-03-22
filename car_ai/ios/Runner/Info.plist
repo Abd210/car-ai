@@ -46,11 +46,18 @@
     <key>UIApplicationSupportsIndirectInputEvents</key>
     <true/>
 
-    <!-- ADD THESE CAMERA/PHOTO USAGE DESCRIPTIONS FOR iOS PERMISSIONS -->
+    <!-- ✅ Camera and Photo Permissions -->
     <key>NSCameraUsageDescription</key>
     <string>We need camera access to capture car dashboard photos for analysis.</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>We need photo library access to upload images for AI analysis.</string>
+
+    <!-- ✅ Internet Access over HTTP -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
 
 </dict>
 </plist>

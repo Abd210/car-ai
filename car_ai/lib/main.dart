@@ -7,7 +7,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
-import 'package:flutter_spinkit/flutter_spinkit.dart';
+// Removed: import 'package:flutter_spinkit/flutter_spinkit.dart';
 
 const String kBackendUrl = 'https://dash-gem-ef3cd0583e98.herokuapp.com/analyzeDashboardPic';
 
@@ -241,121 +241,118 @@ class _DashGemChatPageState extends State<DashGemChatPage>
   }
 
   String _buildConversationMemoryWith(ChatMessage newMessage) {
-  const maxMemoryCount = 10;
-  final messages = [..._messages, newMessage];
+    const maxMemoryCount = 10;
+    final messages = [..._messages, newMessage];
 
-  final recentMessages = messages.length <= maxMemoryCount
-      ? messages
-      : messages.sublist(messages.length - maxMemoryCount);
+    final recentMessages = messages.length <= maxMemoryCount
+        ? messages
+        : messages.sublist(messages.length - maxMemoryCount);
 
-  final buffer = StringBuffer();
-  for (final msg in recentMessages) {
-    final speaker = msg.sender == MessageSender.user ? 'User' : 'AI';
-    if (msg.imageBytes != null) {
-      buffer.writeln('$speaker: [image attached]');
-    }
-    if (msg.text.isNotEmpty) {
-      buffer.writeln('$speaker: ${msg.text}');
-    }
-    buffer.writeln();
-  }
-  return buffer.toString().trim();
-}
-
-
-Future<void> _sendToBackend(String text, Uint8List? imageBytes) async {
-  setState(() {
-    _isSending = true;
-    _aiTyping = true;
-  });
-
-  final typingIndex = _messages.length;
-  // Add a temporary typing bubble
-  _messages.add(ChatMessage(
-    sender: MessageSender.ai,
-    text: '',
-    timeStamp: DateTime.now(),
-  ));
-  WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
-
-  try {
-    // Build conversation memory including the new message
-    final simulatedMessage = ChatMessage(
-      sender: MessageSender.user,
-      text: text,
-      imageBytes: imageBytes,
-      timeStamp: DateTime.now(),
-    );
-
-    final conversationMemory = _buildConversationMemoryWith(simulatedMessage);
-
-    final request = http.MultipartRequest('POST', Uri.parse(kBackendUrl));
-    final fullPrompt = '''
-      $conversationMemory
-      User: ${text.isNotEmpty ? text : '[image only]'}
-      AI:
-      '''
-    .trim();
-
-    request.fields['text'] = fullPrompt;
-
-
-    if (imageBytes != null) {
-      request.files.add(
-        http.MultipartFile.fromBytes(
-          'image',
-          imageBytes,
-          filename: 'user-upload.jpg',
-          contentType: MediaType('image', 'jpeg'),
-        ),
-      );
-    }
-
-    final streamedResponse = await request.send();
-    final resp = await http.Response.fromStream(streamedResponse);
-
-    if (resp.statusCode == 200) {
-      String finalText;
-      try {
-        final decoded = jsonDecode(resp.body);
-        finalText = decoded['response'].toString();
-      } catch (_) {
-        finalText = resp.body;
+    final buffer = StringBuffer();
+    for (final msg in recentMessages) {
+      final speaker = msg.sender == MessageSender.user ? 'User' : 'AI';
+      if (msg.imageBytes != null) {
+        buffer.writeln('$speaker: [image attached]');
       }
-
-      setState(() {
-        _messages[typingIndex] = ChatMessage(
-          sender: MessageSender.ai,
-          text: finalText,
-          timeStamp: DateTime.now(),
-        );
-      });
-    } else {
-      setState(() {
-        _messages[typingIndex] = ChatMessage(
-          sender: MessageSender.ai,
-          text: 'Error: ${resp.statusCode} - ${resp.reasonPhrase}',
-          timeStamp: DateTime.now(),
-        );
-      });
+      if (msg.text.isNotEmpty) {
+        buffer.writeln('$speaker: ${msg.text}');
+      }
+      buffer.writeln();
     }
-  } catch (e) {
+    return buffer.toString().trim();
+  }
+
+  Future<void> _sendToBackend(String text, Uint8List? imageBytes) async {
     setState(() {
-      _messages[typingIndex] = ChatMessage(
-        sender: MessageSender.ai,
-        text: "Failed to send: $e",
+      _isSending = true;
+      _aiTyping = true;
+    });
+
+    final typingIndex = _messages.length;
+    // Add a temporary typing bubble (now with spinning tire).
+    _messages.add(ChatMessage(
+      sender: MessageSender.ai,
+      text: '',
+      timeStamp: DateTime.now(),
+    ));
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+
+    try {
+      // Build conversation memory including the new message
+      final simulatedMessage = ChatMessage(
+        sender: MessageSender.user,
+        text: text,
+        imageBytes: imageBytes,
         timeStamp: DateTime.now(),
       );
-    });
-  } finally {
-    setState(() {
-      _isSending = false;
-      _aiTyping = false;
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
-  }
-}
 
+      final conversationMemory = _buildConversationMemoryWith(simulatedMessage);
+
+      final request = http.MultipartRequest('POST', Uri.parse(kBackendUrl));
+      final fullPrompt = '''
+        $conversationMemory
+        User: ${text.isNotEmpty ? text : '[image only]'}
+        AI:
+        '''
+          .trim();
+
+      request.fields['text'] = fullPrompt;
+
+      if (imageBytes != null) {
+        request.files.add(
+          http.MultipartFile.fromBytes(
+            'image',
+            imageBytes,
+            filename: 'user-upload.jpg',
+            contentType: MediaType('image', 'jpeg'),
+          ),
+        );
+      }
+
+      final streamedResponse = await request.send();
+      final resp = await http.Response.fromStream(streamedResponse);
+
+      if (resp.statusCode == 200) {
+        String finalText;
+        try {
+          final decoded = jsonDecode(resp.body);
+          finalText = decoded['response'].toString();
+        } catch (_) {
+          finalText = resp.body;
+        }
+
+        setState(() {
+          _messages[typingIndex] = ChatMessage(
+            sender: MessageSender.ai,
+            text: finalText,
+            timeStamp: DateTime.now(),
+          );
+        });
+      } else {
+        setState(() {
+          _messages[typingIndex] = ChatMessage(
+            sender: MessageSender.ai,
+            text: 'Error: ${resp.statusCode} - ${resp.reasonPhrase}',
+            timeStamp: DateTime.now(),
+          );
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _messages[typingIndex] = ChatMessage(
+          sender: MessageSender.ai,
+          text: "Failed to send: $e",
+          timeStamp: DateTime.now(),
+        );
+      });
+    } finally {
+      setState(() {
+        _isSending = false;
+        _aiTyping = false;
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+    }
+  }
 
   void _showImagePreview(Uint8List bytes) {
     setState(() {
@@ -742,7 +739,7 @@ class ChatBubble extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// Typing bubble
+// Typing bubble (show a spinning tire instead of dots)
 // ---------------------------------------------------------------------------
 class _TypingBubble extends StatelessWidget {
   final DateTime timestamp;
@@ -768,6 +765,8 @@ class _TypingBubble extends StatelessWidget {
             child: const Icon(Icons.directions_car, color: Colors.black87),
           ),
           const SizedBox(width: 8),
+
+          // The bubble with our rotating tire
           Container(
             margin: const EdgeInsets.only(right: 8),
             padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
@@ -787,17 +786,69 @@ class _TypingBubble extends StatelessWidget {
                 ),
               ],
             ),
-            child: const SpinKitThreeBounce(
-              color: Colors.black87,
-              size: 15,
-            ),
+            // Instead of spinning dots, we use CarTireSpinner
+            child: const CarTireSpinner(size: 22),
           ),
+
           Text(
             _formatTime(timestamp),
             style: const TextStyle(fontSize: 12, color: Colors.black54),
           ),
         ],
       ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A custom spinner that rotates a "tire" icon indefinitely
+// ---------------------------------------------------------------------------
+class CarTireSpinner extends StatefulWidget {
+  final double size;
+  const CarTireSpinner({Key? key, this.size = 24}) : super(key: key);
+
+  @override
+  State<CarTireSpinner> createState() => _CarTireSpinnerState();
+}
+
+class _CarTireSpinnerState extends State<CarTireSpinner>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    // One rotation per 0.8 seconds. Adjust to your liking!
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RotationTransition(
+      turns: _controller,
+      // Option A: Use a circle icon to simulate a simple tire
+      child: 
+        Image.asset('assets/wheel.png',
+          width: widget.size,
+          height: widget.size
+        )
+      
+
+      // Option B: If you have an actual tire image in assets (and declared in pubspec.yaml):
+      // child: Image.asset(
+      //   'assets/tire.png',
+      //   width: widget.size,
+      //   height: widget.size,
+      // ),
     );
   }
 }
