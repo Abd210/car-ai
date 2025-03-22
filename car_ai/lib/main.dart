@@ -1,51 +1,40 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:typed_data';
+import 'dart:convert';
 import 'dart:math' as math;
-
+import 'package:http_parser/http_parser.dart'; // Needed for MediaType
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
-// For animated dots:
 import 'package:flutter_spinkit/flutter_spinkit.dart';
 
-/******************************************************************************
- * ENHANCED SINGLE-PAGE FLUTTER CHAT - "dash-gem"
- *
- * Features:
- *   - Custom top bar (car icon + "dash-gem" + clear icon)
- *   - Avatars for AI & user
- *   - Wave background + gradient
- *   - Timestamps
- *   - AI typing indicator with animated dots
- *   - Press Enter to send
- *   - Scroll-to-bottom button (improved logic)
- *   - Tap images to preview in an overlay
- *   - Long-press bubble to "like" a message
- *****************************************************************************/
+// ---------------------------------------------------------------------------
+// Where we send the request
+// ---------------------------------------------------------------------------
+const String kBackendUrl = 'https://dash-gem-ef3cd0583e98.herokuapp.com/analyzeDashboardPic';
 
-// Replace with your actual backend endpoint
-const String kBackendUrl = 'http://localhost:8080/analyzeDashboardPic';
-
-// Color palette
+// Some colors for the wave background:
 const Color kColorPrimary = Color(0xFF3D8D7A);
 const Color kColorLightGreen = Color(0xFFB3D8A8);
 const Color kColorCream = Color(0xFFFBFFE4);
 const Color kColorMint = Color(0xFFA3D1C6);
 
+// Who sent the message
 enum MessageSender { user, ai }
 
+// Chat message model
 class ChatMessage {
   final MessageSender sender;
   final String text;
-  final File? imageFile;
+  final Uint8List? imageBytes;
   final DateTime timeStamp;
-  bool isLiked; // extra feature: user can long-press to "like"
+  bool isLiked;
 
   ChatMessage({
     required this.sender,
     this.text = '',
-    this.imageFile,
+    this.imageBytes,
     required this.timeStamp,
     this.isLiked = false,
   });
@@ -61,7 +50,6 @@ class DashGemChatApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Single-page app
     return MaterialApp(
       title: 'dash-gem',
       debugShowCheckedModeBanner: false,
@@ -75,7 +63,7 @@ class DashGemChatApp extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// The main single-page chat
+// Main chat page
 // ---------------------------------------------------------------------------
 class DashGemChatPage extends StatefulWidget {
   const DashGemChatPage({Key? key}) : super(key: key);
@@ -87,27 +75,38 @@ class DashGemChatPage extends StatefulWidget {
 class _DashGemChatPageState extends State<DashGemChatPage>
     with SingleTickerProviderStateMixin {
   final ImagePicker _picker = ImagePicker();
-  final TextEditingController _textCtrl = TextEditingController();
-
   final ScrollController _scrollCtrl = ScrollController();
 
-  late List<ChatMessage> _messages;
+  // Simple textfield controller
+  final TextEditingController _textCtrl = TextEditingController();
+
+  // Animation controller for wave
   late AnimationController _waveController;
 
+  // Chat messages
+  List<ChatMessage> _messages = [];
+
+  // UI states
   bool _isSending = false;
   bool _aiTyping = false;
-  bool _showScrollDownBtn = false; // show/hide the scroll-down arrow
-  File? _imagePreviewFile; // for image overlay preview
+  bool _showScrollDownBtn = false;
+
+  // If user chooses an image but hasn't sent yet, store it here
+  Uint8List? _selectedImageBytes;
+
+  // Full-screen preview of any image (when tapped in chat)
+  Uint8List? _imagePreviewBytes;
 
   @override
   void initState() {
     super.initState();
-    // Animate the wave background
-    _waveController =
-        AnimationController(vsync: this, duration: const Duration(seconds: 6))
-          ..repeat();
+    // Start wave animation
+    _waveController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 6),
+    )..repeat();
 
-    // Start with an initial AI greeting
+    // Example "Welcome" message
     _messages = [
       ChatMessage(
         sender: MessageSender.ai,
@@ -116,7 +115,7 @@ class _DashGemChatPageState extends State<DashGemChatPage>
       ),
     ];
 
-    // Listen for scroll changes to show/hide the scroll down button
+    // Listen for scrolling
     _scrollCtrl.addListener(_onScrollChanged);
   }
 
@@ -129,14 +128,11 @@ class _DashGemChatPageState extends State<DashGemChatPage>
     super.dispose();
   }
 
-  // Called whenever user scrolls
+  // Show/hide "scroll to bottom" button
   void _onScrollChanged() {
-    // difference between maxScrollExtent & current offset
-    final distanceFromBottom =
-        _scrollCtrl.position.maxScrollExtent - _scrollCtrl.position.pixels;
-    // if user is more than 150 px away from bottom, show the button
+    final distanceFromBottom = _scrollCtrl.position.maxScrollExtent
+        - _scrollCtrl.position.pixels;
     bool shouldShow = distanceFromBottom > 150;
-
     if (shouldShow != _showScrollDownBtn) {
       setState(() {
         _showScrollDownBtn = shouldShow;
@@ -144,7 +140,7 @@ class _DashGemChatPageState extends State<DashGemChatPage>
     }
   }
 
-  // Clears chat to just the initial greeting
+  // Clears chat
   void _clearChat() {
     setState(() {
       _messages = [
@@ -154,14 +150,13 @@ class _DashGemChatPageState extends State<DashGemChatPage>
           timeStamp: DateTime.now(),
         ),
       ];
+      _selectedImageBytes = null;
+      _textCtrl.clear();
     });
-    // Jump to bottom after clearing
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scrollToBottom();
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
   }
 
-  // Smoothly scroll to the bottom
+  // Scroll to bottom
   void _scrollToBottom() {
     if (_scrollCtrl.hasClients) {
       _scrollCtrl.animateTo(
@@ -172,24 +167,20 @@ class _DashGemChatPageState extends State<DashGemChatPage>
     }
   }
 
-  // Adds a user message
-  void _addUserMessage({String text = '', File? imageFile}) {
+  // Add user message
+  void _addUserMessage({String text = '', Uint8List? imageBytes}) {
     setState(() {
       _messages.add(ChatMessage(
         sender: MessageSender.user,
         text: text,
-        imageFile: imageFile,
+        imageBytes: imageBytes,
         timeStamp: DateTime.now(),
       ));
     });
-
-    // After building, scroll to bottom
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scrollToBottom();
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
   }
 
-  // Adds an AI message
+  // Add AI message
   void _addAIMessage(String text) {
     setState(() {
       _messages.add(ChatMessage(
@@ -198,112 +189,141 @@ class _DashGemChatPageState extends State<DashGemChatPage>
         timeStamp: DateTime.now(),
       ));
     });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
 
-    // After building, scroll to bottom
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scrollToBottom();
+  // On user pressing Enter or clicking Send
+  void _handleSendText() {
+    final text = _textCtrl.text.trim();
+    // If user typed nothing AND didn't pick an image, do nothing
+    if (text.isEmpty && _selectedImageBytes == null) return;
+
+    // Locally add user's chat bubble (which might have text, image, or both)
+    _addUserMessage(text: text, imageBytes: _selectedImageBytes);
+
+    // Then actually send to backend
+    _sendToBackend(text, _selectedImageBytes);
+
+    // Clear local states
+    setState(() {
+      _textCtrl.clear();
+      _selectedImageBytes = null;
     });
   }
 
-  // If user picks from gallery
+  // On textfield submission
+  void _onSubmitted(String value) {
+    _handleSendText();
+  }
+
+  // Pick from gallery (but *don't* send yet; wait for user to press Send)
   Future<void> _pickFromGallery() async {
     try {
       final xFile = await _picker.pickImage(source: ImageSource.gallery);
       if (xFile != null) {
-        final file = File(xFile.path);
-        _addUserMessage(imageFile: file);
-        _sendToBackend('', file);
+        final bytes = await xFile.readAsBytes();
+        setState(() {
+          _selectedImageBytes = bytes;
+        });
       }
     } catch (e) {
       debugPrint("Gallery pick error: $e");
     }
   }
 
-  // If user picks from camera
+  // Pick from camera (but *don't* send yet; wait for user to press Send)
   Future<void> _pickFromCamera() async {
     try {
-      // On web, fallback if no camera or not served on https/localhost
       final xFile = await _picker.pickImage(source: ImageSource.camera);
       if (xFile != null) {
-        final file = File(xFile.path);
-        _addUserMessage(imageFile: file);
-        _sendToBackend('', file);
+        final bytes = await xFile.readAsBytes();
+        setState(() {
+          _selectedImageBytes = bytes;
+        });
       }
     } catch (e) {
       debugPrint("Camera pick error: $e");
     }
   }
 
-  // Called when user hits Send or presses Enter
-  void _handleSendText() {
-    final text = _textCtrl.text.trim();
-    if (text.isEmpty) return;
-    _addUserMessage(text: text);
-    _textCtrl.clear();
-    _sendToBackend(text, null);
-  }
-
-  // Called when user presses Enter
-  void _onSubmitted(String value) {
-    _handleSendText();
-  }
-
-  // Actually send data to backend
-  Future<void> _sendToBackend(String text, File? imageFile) async {
+  // *** The crucial method that does the "curl-like" request. ***
+  Future<void> _sendToBackend(String text, Uint8List? imageBytes) async {
     setState(() {
       _isSending = true;
-      _aiTyping = true;
+      _aiTyping = true; // We'll show a typing bubble
     });
 
-    // Insert an AI typing bubble (with animated dots)
+    // Insert a temporary AI "typing" bubble at the end
     final typingIndex = _messages.length;
     _messages.add(ChatMessage(
       sender: MessageSender.ai,
-      text: "",
+      text: '',
       timeStamp: DateTime.now(),
     ));
-
-    // Jump to bottom
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scrollToBottom();
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
 
     try {
+      // Create multipart request
       final request = http.MultipartRequest('POST', Uri.parse(kBackendUrl));
 
-      if (imageFile != null) {
-        final bytes = await imageFile.readAsBytes();
-        request.files.add(http.MultipartFile.fromBytes(
-          'image',
-          bytes,
-          filename: 'car.jpg',
-        ));
+      // 1) Add text field
+      //    If user typed anything, send it. If not, just put something trivial.
+      if (text.isNotEmpty) {
+        request.fields['text'] = text;
+      } else {
+        request.fields['text'] = 'User posted only an image.';
       }
-      request.fields['text'] =
-          text.isNotEmpty ? text : "Analyze my car dashboard.";
 
-      final streamedResp = await request.send();
-      final resp = await http.Response.fromStream(streamedResp);
+      // 2) Add file under field name "image"
+      if (imageBytes != null) {
+        request.files.add(
+          http.MultipartFile.fromBytes(
+            'image',
+            imageBytes,
+            filename: 'check-engine.jpg',
+            contentType: MediaType('image', 'jpeg'), // or 'png' if needed
+          ),
+        );
+      }
+
+      // Send
+      final streamedResponse = await request.send();
+      final resp = await http.Response.fromStream(streamedResponse);
 
       if (resp.statusCode == 200) {
+        // Attempt to decode as JSON
+        String finalText;
+        try {
+          final decoded = jsonDecode(resp.body);
+          if (decoded is Map && decoded.containsKey('response')) {
+            finalText = decoded['response'].toString();
+          } else {
+            finalText = resp.body;
+          }
+        } catch (_) {
+          finalText = resp.body;
+        }
+
+        // Replace "typing bubble" with final AI text
         setState(() {
-          // Replace the typing bubble text with actual AI message
           _messages[typingIndex] = ChatMessage(
             sender: MessageSender.ai,
-            text: resp.body,
+            text: finalText,
             timeStamp: DateTime.now(),
           );
         });
       } else {
+        // Replace "typing bubble" with error
         setState(() {
           _messages[typingIndex] = ChatMessage(
             sender: MessageSender.ai,
-            text: "Error: ${resp.statusCode} - ${resp.reasonPhrase}",
+            text: 'Error: ${resp.statusCode} - ${resp.reasonPhrase}',
             timeStamp: DateTime.now(),
           );
         });
       }
     } catch (e) {
+      // Replace "typing bubble" with exception
       setState(() {
         _messages[typingIndex] = ChatMessage(
           sender: MessageSender.ai,
@@ -316,34 +336,37 @@ class _DashGemChatPageState extends State<DashGemChatPage>
         _isSending = false;
         _aiTyping = false;
       });
-      // Scroll to bottom after AI responds
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToBottom();
-      });
+      WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
     }
   }
 
-  // Show an overlay preview of an image
-  void _showImagePreview(File file) {
+  // Show an overlay of the image
+  void _showImagePreview(Uint8List bytes) {
     setState(() {
-      _imagePreviewFile = file;
+      _imagePreviewBytes = bytes;
     });
   }
 
-  // Hide the image preview overlay
+  // Close preview
   void _closeImagePreview() {
     setState(() {
-      _imagePreviewFile = null;
+      _imagePreviewBytes = null;
+    });
+  }
+
+  // Remove the "selected" image (if user picks one but wants to unselect)
+  void _removeSelectedImage() {
+    setState(() {
+      _selectedImageBytes = null;
     });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // main body
       body: Stack(
         children: [
-          // Wave background with gradient
+          // Painted wave background (moving)
           CustomPaint(
             painter: WavePainter(animation: _waveController),
             child: Container(
@@ -357,10 +380,9 @@ class _DashGemChatPageState extends State<DashGemChatPage>
             ),
           ),
 
-          // Column with top bar, list, input
           Column(
             children: [
-              // Custom top bar
+              // Top bar
               Container(
                 height: 56,
                 padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -403,21 +425,21 @@ class _DashGemChatPageState extends State<DashGemChatPage>
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
                   itemCount: _messages.length,
                   itemBuilder: (_, idx) {
-                    // If AI bubble is in "typing" state (no text), show animated dots
                     final msg = _messages[idx];
-                    final isTypingIndicator =
+                    final isTypingBubble =
                         (msg.sender == MessageSender.ai &&
                          msg.text.isEmpty &&
                          _aiTyping);
 
-                    if (isTypingIndicator) {
+                    if (isTypingBubble) {
+                      // Show typing bubble
                       return _TypingBubble(timestamp: msg.timeStamp);
                     } else {
+                      // Show normal chat bubble
                       return ChatBubble(
                         chat: msg,
                         onTapImage: _showImagePreview,
                         onLongPressBubble: () {
-                          // Toggle 'like'
                           setState(() {
                             msg.isLiked = !msg.isLiked;
                           });
@@ -428,57 +450,79 @@ class _DashGemChatPageState extends State<DashGemChatPage>
                 ),
               ),
 
-              // Bottom input bar
+              // Bottom bar
               Container(
                 color: kColorMint.withOpacity(0.2),
                 padding: const EdgeInsets.all(4),
-                child: Row(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    IconButton(
-                      onPressed: _pickFromGallery,
-                      icon: const Icon(Icons.photo_library_outlined),
-                      tooltip: "Gallery",
-                    ),
-                    IconButton(
-                      onPressed: _pickFromCamera,
-                      icon: const Icon(Icons.camera_alt_outlined),
-                      tooltip: "Camera",
-                    ),
-                    Expanded(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.8),
-                          borderRadius: BorderRadius.circular(8),
-                          boxShadow: const [
-                            BoxShadow(
-                              color: Colors.black12,
-                              offset: Offset(0, 1),
-                              blurRadius: 2,
-                            ),
-                          ],
-                        ),
-                        child: TextField(
-                          controller: _textCtrl,
-                          decoration: const InputDecoration(
-                            hintText: "Type message...",
-                            border: InputBorder.none,
+                    // If user has selected an image (but not sent yet), show a tiny preview + remove button
+                    if (_selectedImageBytes != null)
+                      Row(
+                        children: [
+                          SizedBox(
+                            width: 60,
+                            height: 60,
+                            child: Image.memory(_selectedImageBytes!, fit: BoxFit.cover),
                           ),
-                          onSubmitted: _onSubmitted,
-                        ),
+                          IconButton(
+                            onPressed: _removeSelectedImage,
+                            icon: const Icon(Icons.close),
+                            tooltip: "Remove selected image",
+                          ),
+                        ],
                       ),
-                    ),
-                    IconButton(
-                      onPressed: _isSending ? null : _handleSendText,
-                      icon: _isSending
-                          ? const SizedBox(
-                              width: 24,
-                              height: 24,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
+
+                    Row(
+                      children: [
+                        IconButton(
+                          onPressed: _pickFromGallery,
+                          icon: const Icon(Icons.photo_library_outlined),
+                          tooltip: "Gallery",
+                        ),
+                        IconButton(
+                          onPressed: _pickFromCamera,
+                          icon: const Icon(Icons.camera_alt_outlined),
+                          tooltip: "Camera",
+                        ),
+                        Expanded(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.8),
+                              borderRadius: BorderRadius.circular(8),
+                              boxShadow: const [
+                                BoxShadow(
+                                  color: Colors.black12,
+                                  offset: Offset(0, 1),
+                                  blurRadius: 2,
+                                ),
+                              ],
+                            ),
+                            child: TextField(
+                              controller: _textCtrl,
+                              onSubmitted: _onSubmitted,
+                              decoration: const InputDecoration(
+                                hintText: 'Type message...',
+                                border: InputBorder.none,
                               ),
-                            )
-                          : const Icon(Icons.send),
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: _isSending ? null : _handleSendText,
+                          icon: _isSending
+                              ? const SizedBox(
+                                  width: 24,
+                                  height: 24,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.send),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -486,7 +530,7 @@ class _DashGemChatPageState extends State<DashGemChatPage>
             ],
           ),
 
-          // Scroll-to-bottom button if user is scrolled up
+          // Scroll to bottom button
           if (_showScrollDownBtn)
             Positioned(
               bottom: 70,
@@ -499,15 +543,15 @@ class _DashGemChatPageState extends State<DashGemChatPage>
               ),
             ),
 
-          // Image preview overlay
-          if (_imagePreviewFile != null)
+          // Image preview
+          if (_imagePreviewBytes != null)
             Positioned.fill(
               child: GestureDetector(
                 onTap: _closeImagePreview,
                 child: Container(
                   color: Colors.black87,
                   child: Center(
-                    child: Image.file(_imagePreviewFile!),
+                    child: Image.memory(_imagePreviewBytes!),
                   ),
                 ),
               ),
@@ -519,17 +563,18 @@ class _DashGemChatPageState extends State<DashGemChatPage>
 }
 
 // ---------------------------------------------------------------------------
-// ChatBubble with Avatars, Timestamps, optional 'like' heart
+// ChatBubble: user or AI bubble
 // ---------------------------------------------------------------------------
 class ChatBubble extends StatelessWidget {
   final ChatMessage chat;
   final VoidCallback onLongPressBubble;
-  final Function(File) onTapImage;
+  final Function(Uint8List) onTapImage;
+
   const ChatBubble({
     Key? key,
     required this.chat,
-    required this.onLongPressBubble,
     required this.onTapImage,
+    required this.onLongPressBubble,
   }) : super(key: key);
 
   String _formatTime(DateTime dt) {
@@ -550,6 +595,7 @@ class ChatBubble extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
+            // AI avatar
             CircleAvatar(
               radius: 16,
               backgroundColor: kColorPrimary.withOpacity(0.2),
@@ -581,10 +627,10 @@ class ChatBubble extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      if (chat.imageFile != null) ...[
+                      if (chat.imageBytes != null) ...[
                         GestureDetector(
-                          onTap: () => onTapImage(chat.imageFile!),
-                          child: Image.file(chat.imageFile!, fit: BoxFit.cover),
+                          onTap: () => onTapImage(chat.imageBytes!),
+                          child: Image.memory(chat.imageBytes!, fit: BoxFit.cover),
                         ),
                         const SizedBox(height: 8),
                       ],
@@ -596,7 +642,8 @@ class ChatBubble extends StatelessWidget {
                       if (chat.isLiked)
                         const Align(
                           alignment: Alignment.centerRight,
-                          child: Icon(Icons.favorite, size: 16, color: Colors.redAccent),
+                          child: Icon(Icons.favorite,
+                              size: 16, color: Colors.redAccent),
                         ),
                     ],
                   ),
@@ -647,10 +694,10 @@ class ChatBubble extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
-                    if (chat.imageFile != null) ...[
+                    if (chat.imageBytes != null) ...[
                       GestureDetector(
-                        onTap: () => onTapImage(chat.imageFile!),
-                        child: Image.file(chat.imageFile!, fit: BoxFit.cover),
+                        onTap: () => onTapImage(chat.imageBytes!),
+                        child: Image.memory(chat.imageBytes!, fit: BoxFit.cover),
                       ),
                       const SizedBox(height: 8),
                     ],
@@ -662,7 +709,8 @@ class ChatBubble extends StatelessWidget {
                     if (chat.isLiked)
                       const Align(
                         alignment: Alignment.centerLeft,
-                        child: Icon(Icons.favorite, size: 16, color: Colors.redAccent),
+                        child: Icon(Icons.favorite,
+                            size: 16, color: Colors.redAccent),
                       ),
                   ],
                 ),
@@ -682,7 +730,7 @@ class ChatBubble extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// _TypingBubble: An AI bubble that shows an animated typing indicator
+// Typing bubble
 // ---------------------------------------------------------------------------
 class _TypingBubble extends StatelessWidget {
   final DateTime timestamp;
@@ -702,14 +750,12 @@ class _TypingBubble extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          // AI avatar
           CircleAvatar(
             radius: 16,
             backgroundColor: kColorPrimary.withOpacity(0.2),
             child: const Icon(Icons.directions_car, color: Colors.black87),
           ),
           const SizedBox(width: 8),
-          // BUBBLE with animated dots
           Container(
             margin: const EdgeInsets.only(right: 8),
             padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
@@ -729,7 +775,7 @@ class _TypingBubble extends StatelessWidget {
                 ),
               ],
             ),
-            child: SpinKitThreeBounce(
+            child: const SpinKitThreeBounce(
               color: Colors.black87,
               size: 15,
             ),
@@ -745,7 +791,7 @@ class _TypingBubble extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// WavePainter with slight gradient behind it
+// WavePainter for the background (made bigger amplitude + placed lower)
 // ---------------------------------------------------------------------------
 class WavePainter extends CustomPainter {
   final Animation<double> animation;
@@ -756,33 +802,35 @@ class WavePainter extends CustomPainter {
     final w = size.width;
     final h = size.height;
 
-    // We'll rely on the parent Container's gradient fill as the base.
-    // Then draw two waves on top.
+    // Wave #1 (Mint)
     final wavePaint1 = Paint()..color = kColorMint.withOpacity(0.4);
     final wave1 = Path();
-    wave1.moveTo(0, h * 0.3);
+    // Start from near bottom (70%)
+    wave1.moveTo(0, h * 0.7);
     for (double x = 0; x <= w; x++) {
       wave1.lineTo(
         x,
-        h * 0.3 + math.sin((x + animation.value * 600) * 0.01) * 25,
+        h * 0.7 + math.sin((x + animation.value * 500) * 0.02) * 40,
       );
     }
-    wave1.lineTo(w, 0);
-    wave1.lineTo(0, 0);
+    wave1.lineTo(w, h);
+    wave1.lineTo(0, h);
     wave1.close();
     canvas.drawPath(wave1, wavePaint1);
 
+    // Wave #2 (LightGreen)
     final wavePaint2 = Paint()..color = kColorLightGreen.withOpacity(0.4);
     final wave2 = Path();
-    wave2.moveTo(0, h * 0.45);
+    // Start a bit higher (60%)
+    wave2.moveTo(0, h * 0.6);
     for (double x = 0; x <= w; x++) {
       wave2.lineTo(
         x,
-        h * 0.45 + math.sin((x + animation.value * 700) * 0.02) * 30,
+        h * 0.6 + math.sin((x + animation.value * 700) * 0.025) * 50,
       );
     }
-    wave2.lineTo(w, 0);
-    wave2.lineTo(0, 0);
+    wave2.lineTo(w, h);
+    wave2.lineTo(0, h);
     wave2.close();
     canvas.drawPath(wave2, wavePaint2);
   }
@@ -790,4 +838,3 @@ class WavePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }
-// fair game

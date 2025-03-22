@@ -41,6 +41,7 @@ dependencies:
   # For fancy icons
   font_awesome_flutter: ^10.4.0
   
+  
 
 dev_dependencies:
   flutter_test:

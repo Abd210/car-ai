@@ -3,6 +3,8 @@
 
     <!-- ADD THESE CAMERA/STORAGE PERMISSIONS FOR ANDROID -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- If you use older Android versions or need direct file I/O, add: -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
